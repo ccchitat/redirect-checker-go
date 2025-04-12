@@ -69,17 +69,17 @@ func getHostIP(hostname string) string {
 
 func init() {
 	// 创建一个默认的路由引擎
-	r := gin.Default()
+	router = gin.Default()
 
 	// 根路由 - 测试连通性
-	r.GET("/", func(c *gin.Context) {
+	router.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "服务器运行正常",
 		})
 	})
 
 	// 重定向检查服务
-	r.POST("/redirect-check", func(c *gin.Context) {
+	router.POST("/redirect-check", func(c *gin.Context) {
 		startTime := time.Now()
 		clientIP := c.ClientIP()
 		log.Printf("开始处理请求: %v, 客户端IP: %s", startTime, clientIP)
@@ -278,7 +278,7 @@ func init() {
 	// 启动服务器
 	// log.Printf("服务器启动在端口 3001")
 	// r.Run(":3001")
-	r.Run()
+	router.Run()
 }
 
 // func init() {
