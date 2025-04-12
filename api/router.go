@@ -16,7 +16,6 @@ import (
 
 var router *gin.Engine
 
-
 type ProxyConfig struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -78,7 +77,6 @@ func getHostIP(hostname string) string {
 // 		})
 // 	})
 
-
 // 		c.JSON(http.StatusOK, response)
 // 	})
 
@@ -101,7 +99,7 @@ func init() {
 	// 重定向检查服务
 	router.POST("/redirect-check", func(c *gin.Context) {
 		startTime := time.Now()
-		clientIP := c.ClientIP()
+		clientIP := getClientIP(c)
 		log.Printf("开始处理请求: %v, 客户端IP: %s", startTime, clientIP)
 
 		var req RedirectCheckRequest
@@ -295,37 +293,32 @@ func init() {
 		c.JSON(http.StatusOK, response)
 	})
 
-	
-	// router.Any("/*path", func(context *gin.Context) {
-	// 	uri := context.Param("path")
-	// 	if !strings.Contains(uri, "bot") {
-	// 		context.String(http.StatusNotFound, "404 Not found")
-	// 		return
-	// 	}
-	// 	url := "https://api.telegram.org/bot" + uri
-	// 	req, err := http.NewRequestWithContext(context, context.Request.Method, url, context.Request.Body)
-	// 	if err != nil {
-	// 		fmt.Println(err)
-	// 		context.String(http.StatusBadRequest, err.Error())
-	// 		return
-	// 	}
-	// 	req.Header = context.Request.Header
-	// 	req.PostForm = context.Request.PostForm
-	// 	req.Form = context.Request.Form
-	// 	resp, err := http.DefaultClient.Do(req)
-	// 	if err != nil {
-	// 		fmt.Println(err)
-	// 		context.String(http.StatusBadRequest, err.Error())
-	// 		return
-	// 	}
-	// 	context.DataFromReader(resp.StatusCode, resp.ContentLength, "application/json", resp.Body, nil)
-	// })
+}
+
+func getClientIP(c *gin.Context) string {
+	// 按优先级检查多个 Header
+	if ip := c.GetHeader("X-Forwarded-For"); ip != "" {
+		// X-Forwarded-For 可能包含多个 IP，取第一个
+		ips := strings.Split(ip, ",")
+		return strings.TrimSpace(ips[0])
+	}
+
+	if ip := c.GetHeader("X-Real-IP"); ip != "" {
+		return ip
+	}
+
+	if ip := c.GetHeader("True-Client-IP"); ip != "" {
+		return ip
+	}
+
+	// 如果都没有，则使用 RemoteAddr
+	ip, _, err := net.SplitHostPort(c.Request.RemoteAddr)
+	if err != nil {
+		return c.Request.RemoteAddr
+	}
+	return ip
 }
 
 func Listen(w http.ResponseWriter, r *http.Request) {
 	router.ServeHTTP(w, r)
 }
-
-
-
-
