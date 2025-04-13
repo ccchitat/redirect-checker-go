@@ -43,10 +43,11 @@ type IPInfoResponse struct {
 // 响应结构体
 type RedirectCheckResponse struct {
 	IPInfo           IPInfoResponse `json:"ip_info"`
-	Code             int            `json:"code"`
+	Status           int            `json:"status"`
 	RedirectPath     []string       `json:"redirect_path"`
 	TargetURL        string         `json:"target_url"`
 	TrackingTemplate string         `json:"tracking_template"`
+	Error            string         `json:"error,omitempty"`
 }
 
 // IP信息结构体
@@ -228,10 +229,20 @@ func init() {
 		ipInfo, err := getIPInfo(client)
 		if err != nil {
 			log.Printf("获取IP信息失败: %v", err)
-		} else {
-			log.Printf("当前IP信息: IP=%s, 国家=%s, 城市=%s, ISP=%s",
-				ipInfo.IP, ipInfo.CountryName, ipInfo.City, ipInfo.ORG)
+			c.JSON(http.StatusOK, RedirectCheckResponse{
+				Status: 0,
+				Error:  fmt.Sprintf("获取IP信息失败: %v", err),
+				IPInfo: IPInfoResponse{
+					IP:      "未知",
+					Country: "未知",
+					Region:  "未知",
+					City:    "未知",
+				},
+			})
+			return
 		}
+		log.Printf("当前IP信息: IP=%s, 国家=%s, 城市=%s, ISP=%s",
+			ipInfo.IP, ipInfo.CountryName, ipInfo.City, ipInfo.ORG)
 
 		redirectPath := []string{req.Link}
 		currentURL := req.Link
@@ -246,7 +257,16 @@ func init() {
 			reqObj, err := http.NewRequest("GET", currentURL, nil)
 			if err != nil {
 				log.Printf("创建请求失败: %v", err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "创建请求失败"})
+				c.JSON(http.StatusOK, RedirectCheckResponse{
+					Status: 0,
+					Error:  "创建请求失败",
+					IPInfo: IPInfoResponse{
+						IP:      ipInfo.IP,
+						Country: ipInfo.CountryName,
+						Region:  ipInfo.Region,
+						City:    ipInfo.City,
+					},
+				})
 				return
 			}
 
@@ -262,22 +282,23 @@ func init() {
 
 			if err != nil {
 				log.Printf("请求失败: %v (类型: %T)", err, err)
+				errorMsg := fmt.Sprintf("请求失败 (耗时: %v): %v", reqDuration, err)
 				if strings.Contains(err.Error(), "timeout") {
-					c.JSON(http.StatusGatewayTimeout, gin.H{
-						"error": fmt.Sprintf("请求超时 (耗时: %v): %v", reqDuration, err),
-						"url":   currentURL,
-					})
+					errorMsg = fmt.Sprintf("请求超时 (耗时: %v): %v", reqDuration, err)
 				} else if strings.Contains(err.Error(), "EOF") {
-					c.JSON(http.StatusBadGateway, gin.H{
-						"error": fmt.Sprintf("服务器连接中断 (EOF) (耗时: %v): %v", reqDuration, err),
-						"url":   currentURL,
-					})
-				} else {
-					c.JSON(http.StatusBadRequest, gin.H{
-						"error": fmt.Sprintf("请求失败 (耗时: %v): %v", reqDuration, err),
-						"url":   currentURL,
-					})
+					errorMsg = fmt.Sprintf("服务器连接中断 (EOF) (耗时: %v): %v", reqDuration, err)
 				}
+				c.JSON(http.StatusOK, RedirectCheckResponse{
+					Status: 0,
+					Error:  errorMsg,
+					IPInfo: IPInfoResponse{
+						IP:      ipInfo.IP,
+						Country: ipInfo.CountryName,
+						Region:  ipInfo.Region,
+						City:    ipInfo.City,
+					},
+					TargetURL: currentURL,
+				})
 				return
 			}
 
@@ -347,7 +368,7 @@ func init() {
 			break
 		}
 
-		// 在响应部分替换为：
+		// 成功响应
 		response := RedirectCheckResponse{
 			IPInfo: IPInfoResponse{
 				IP:      ipInfo.IP,
@@ -355,20 +376,10 @@ func init() {
 				Region:  ipInfo.Region,
 				City:    ipInfo.City,
 			},
-			Code:             200,
+			Status:           1,
 			RedirectPath:     redirectPath,
 			TargetURL:        redirectPath[len(redirectPath)-1],
 			TrackingTemplate: createTrackingTemplate(redirectPath[len(redirectPath)-1]),
-		}
-
-		// 如果获取IP信息失败，使用默认值
-		if ipInfo == nil {
-			response.IPInfo = IPInfoResponse{
-				IP:      "未知",
-				Country: "未知",
-				Region:  "未知",
-				City:    "未知",
-			}
 		}
 
 		totalDuration := time.Since(startTime)
