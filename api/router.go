@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -31,10 +32,49 @@ type RedirectCheckRequest struct {
 	Timeout     int         `json:"timeout"` // 超时时间（秒）
 }
 
+// IP信息响应结构体
+type IPInfoResponse struct {
+	IP      string `json:"ip"`
+	Country string `json:"country"`
+	Region  string `json:"region"`
+	City    string `json:"city"`
+}
+
 // 响应结构体
 type RedirectCheckResponse struct {
-	RedirectPath []string `json:"redirect_path"`
-	TargetURL    string   `json:"target_url"`
+	IPInfo           IPInfoResponse `json:"ip_info"`
+	Code             int            `json:"code"`
+	RedirectPath     []string       `json:"redirect_path"`
+	TargetURL        string         `json:"target_url"`
+	TrackingTemplate string         `json:"tracking_template"`
+}
+
+// IP信息结构体
+type IPInfo struct {
+	IP                 string  `json:"ip"`
+	Version            string  `json:"version"`
+	City               string  `json:"city"`
+	Region             string  `json:"region"`
+	RegionCode         string  `json:"region_code"`
+	Country            string  `json:"country"`
+	CountryName        string  `json:"country_name"`
+	CountryCode        string  `json:"country_code"`
+	CountryCodeIso3    string  `json:"country_code_iso3"`
+	CountryCapital     string  `json:"country_capital"`
+	CountryTld         string  `json:"country_tld"`
+	ContinentCode      string  `json:"continent_code"`
+	InEu               bool    `json:"in_eu"`
+	Postal             string  `json:"postal"`
+	Latitude           float64 `json:"latitude"`
+	Longitude          float64 `json:"longitude"`
+	Timezone           string  `json:"timezone"`
+	UtcOffset          string  `json:"utc_offset"`
+	CountryCallingCode string  `json:"country_calling_code"`
+	Currency           string  `json:"currency"`
+	CurrencyName       string  `json:"currency_name"`
+	Languages          string  `json:"languages"`
+	ASN                string  `json:"asn"`
+	ORG                string  `json:"org"`
 }
 
 // 检查Meta刷新重定向
@@ -64,6 +104,22 @@ func getHostIP(hostname string) string {
 		return "无法解析IP"
 	}
 	return strings.Join(ips, ", ")
+}
+
+// 获取IP信息
+func getIPInfo(client *http.Client) (*IPInfo, error) {
+	resp, err := client.Get("https://ipapi.co/json/")
+	if err != nil {
+		return nil, fmt.Errorf("请求IP信息失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var ipInfo IPInfo
+	if err := json.NewDecoder(resp.Body).Decode(&ipInfo); err != nil {
+		return nil, fmt.Errorf("解析IP信息失败: %v", err)
+	}
+
+	return &ipInfo, nil
 }
 
 // func init() {
@@ -166,6 +222,15 @@ func init() {
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
+		}
+
+		// 获取IP信息
+		ipInfo, err := getIPInfo(client)
+		if err != nil {
+			log.Printf("获取IP信息失败: %v", err)
+		} else {
+			log.Printf("当前IP信息: IP=%s, 国家=%s, 城市=%s, ISP=%s",
+				ipInfo.IP, ipInfo.CountryName, ipInfo.City, ipInfo.ORG)
 		}
 
 		redirectPath := []string{req.Link}
@@ -282,9 +347,28 @@ func init() {
 			break
 		}
 
+		// 在响应部分替换为：
 		response := RedirectCheckResponse{
-			RedirectPath: redirectPath,
-			TargetURL:    redirectPath[len(redirectPath)-1],
+			IPInfo: IPInfoResponse{
+				IP:      ipInfo.IP,
+				Country: ipInfo.CountryName,
+				Region:  ipInfo.Region,
+				City:    ipInfo.City,
+			},
+			Code:             200,
+			RedirectPath:     redirectPath,
+			TargetURL:        redirectPath[len(redirectPath)-1],
+			TrackingTemplate: createTrackingTemplate(redirectPath[len(redirectPath)-1]),
+		}
+
+		// 如果获取IP信息失败，使用默认值
+		if ipInfo == nil {
+			response.IPInfo = IPInfoResponse{
+				IP:      "未知",
+				Country: "未知",
+				Region:  "未知",
+				City:    "未知",
+			}
 		}
 
 		totalDuration := time.Since(startTime)
@@ -321,4 +405,35 @@ func getClientIP(c *gin.Context) string {
 
 func Listen(w http.ResponseWriter, r *http.Request) {
 	router.ServeHTTP(w, r)
+}
+
+// 验证URL是否有效
+func isValidURL(urlStr string) bool {
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return false
+	}
+	return parsedURL.Scheme != "" && parsedURL.Host != ""
+}
+
+// 创建跟踪模板
+func createTrackingTemplate(urlStr string) string {
+	if !isValidURL(urlStr) {
+		return ""
+	}
+
+	// 分割 URL 的基础部分和查询参数
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return ""
+	}
+
+	// 获取查询参数部分
+	queryPart := ""
+	if parsedURL.RawQuery != "" {
+		queryPart = "?" + parsedURL.RawQuery
+	}
+
+	// 返回 {lpurl} 加上查询参数
+	return "{lpurl}" + queryPart
 }
