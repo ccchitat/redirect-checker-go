@@ -30,6 +30,7 @@ type RedirectCheckRequest struct {
 	Proxy       ProxyConfig `json:"proxy"`
 	Link        string      `json:"link" binding:"required"`
 	Timeout     int         `json:"timeout"` // 超时时间（秒）
+	Referer     string      `json:"referer"` // 请求来源
 }
 
 // IP信息响应结构体
@@ -251,7 +252,6 @@ func init() {
 		for i := 0; i < 10; i++ {
 			parsedURL, _ := url.Parse(currentURL)
 			currentIP := getHostIP(parsedURL.Hostname())
-			log.Printf("开始第 %d 次请求: %s (IP: %s)", i+1, currentURL, currentIP)
 			reqStartTime := time.Now()
 
 			reqObj, err := http.NewRequest("GET", currentURL, nil)
@@ -275,6 +275,11 @@ func init() {
 			reqObj.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 			reqObj.Header.Set("Accept-Language", "en-US,en;q=0.9")
 			reqObj.Header.Set("Connection", "close")
+			if req.Referer != "" {
+				reqObj.Header.Set("Referer", req.Referer)
+			}
+
+			log.Printf("开始第 %d 次请求: %s (IP: %s) Referer: %s", i+1, currentURL, currentIP, req.Referer)
 
 			resp, err := client.Do(reqObj)
 			reqDuration := time.Since(reqStartTime)
