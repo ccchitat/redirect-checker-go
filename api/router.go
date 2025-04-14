@@ -26,7 +26,7 @@ type ProxyConfig struct {
 
 // 请求结构体
 type RedirectCheckRequest struct {
-	EnableProxy bool        `json:"enable_proxy"` // 是否启用代理
+	EnableProxy *bool       `json:"enable_proxy"` // 是否启用代理，未传入时默认为true
 	Proxy       ProxyConfig `json:"proxy"`
 	Link        string      `json:"link" binding:"required"`
 	Timeout     int         `json:"timeout"` // 超时时间（秒）
@@ -184,6 +184,13 @@ func init() {
 			log.Printf("使用默认超时时间: %d秒", req.Timeout)
 		}
 
+		// 设置默认启用代理
+		if req.EnableProxy == nil {
+			defaultValue := true
+			req.EnableProxy = &defaultValue
+			log.Printf("默认启用代理")
+		}
+
 		// 创建HTTP客户端
 		transport := &http.Transport{
 			TLSHandshakeTimeout:   time.Duration(req.Timeout) * time.Second,
@@ -193,7 +200,7 @@ func init() {
 		}
 
 		// 如果启用代理，设置代理配置
-		if req.EnableProxy {
+		if *req.EnableProxy {
 			// 设置代理URL
 			proxyURL := fmt.Sprintf("http://%s:%s@%s:%s",
 				req.Proxy.Username,
@@ -375,13 +382,13 @@ func init() {
 
 		// 成功响应
 		response := RedirectCheckResponse{
+			Status: 1,
 			IPInfo: IPInfoResponse{
 				IP:      ipInfo.IP,
 				Country: ipInfo.CountryName,
 				Region:  ipInfo.Region,
 				City:    ipInfo.City,
 			},
-			Status:           1,
 			RedirectPath:     redirectPath,
 			TargetURL:        redirectPath[len(redirectPath)-1],
 			TrackingTemplate: createTrackingTemplate(redirectPath[len(redirectPath)-1]),
