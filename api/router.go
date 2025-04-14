@@ -43,12 +43,12 @@ type IPInfoResponse struct {
 
 // 响应结构体
 type RedirectCheckResponse struct {
-	IPInfo           IPInfoResponse `json:"ip_info"`
 	Status           int            `json:"status"`
+	Error            string         `json:"error,omitempty"`
+	IPInfo           IPInfoResponse `json:"ip_info"`
 	RedirectPath     []string       `json:"redirect_path"`
 	TargetURL        string         `json:"target_url"`
 	TrackingTemplate string         `json:"tracking_template"`
-	Error            string         `json:"error,omitempty"`
 }
 
 // IP信息结构体
@@ -239,7 +239,7 @@ func init() {
 			log.Printf("获取IP信息失败: %v", err)
 			c.JSON(http.StatusOK, RedirectCheckResponse{
 				Status: 0,
-				Error:  fmt.Sprintf("获取IP信息失败: %v", err),
+				Error:  "网络连接错误",
 				IPInfo: IPInfoResponse{
 					IP:      "未知",
 					Country: "未知",
@@ -294,11 +294,11 @@ func init() {
 
 			if err != nil {
 				log.Printf("请求失败: %v (类型: %T)", err, err)
-				errorMsg := fmt.Sprintf("请求失败 (耗时: %v): %v", reqDuration, err)
+				errorMsg := "网络连接错误"
 				if strings.Contains(err.Error(), "timeout") {
-					errorMsg = fmt.Sprintf("请求超时 (耗时: %v): %v", reqDuration, err)
+					errorMsg = "网络连接错误"
 				} else if strings.Contains(err.Error(), "EOF") {
-					errorMsg = fmt.Sprintf("服务器连接中断 (EOF) (耗时: %v): %v", reqDuration, err)
+					errorMsg = "网络连接错误"
 				}
 				c.JSON(http.StatusOK, RedirectCheckResponse{
 					Status: 0,
