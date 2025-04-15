@@ -12,7 +12,7 @@ func main() {
 
 	// 启动服务器
 	log.Printf("服务器启动在默认端口")
-	if err := http.ListenAndServe("", nil); err != nil {
+	if err := http.ListenAndServe(":3000", nil); err != nil {
 		log.Fatalf("服务器启动失败: %v", err)
 	}
 }

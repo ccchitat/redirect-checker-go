@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,32 +52,27 @@ type RedirectCheckResponse struct {
 	TrackingTemplate string         `json:"tracking_template"`
 }
 
-// IP信息结构体
+// IPInfo 结构体
 type IPInfo struct {
-	IP                 string  `json:"ip"`
-	Version            string  `json:"version"`
-	City               string  `json:"city"`
-	Region             string  `json:"region"`
-	RegionCode         string  `json:"region_code"`
-	Country            string  `json:"country"`
-	CountryName        string  `json:"country_name"`
-	CountryCode        string  `json:"country_code"`
-	CountryCodeIso3    string  `json:"country_code_iso3"`
-	CountryCapital     string  `json:"country_capital"`
-	CountryTld         string  `json:"country_tld"`
-	ContinentCode      string  `json:"continent_code"`
-	InEu               bool    `json:"in_eu"`
-	Postal             string  `json:"postal"`
-	Latitude           float64 `json:"latitude"`
-	Longitude          float64 `json:"longitude"`
-	Timezone           string  `json:"timezone"`
-	UtcOffset          string  `json:"utc_offset"`
-	CountryCallingCode string  `json:"country_calling_code"`
-	Currency           string  `json:"currency"`
-	CurrencyName       string  `json:"currency_name"`
-	Languages          string  `json:"languages"`
-	ASN                string  `json:"asn"`
-	ORG                string  `json:"org"`
+	Code   int    `json:"code"`
+	Msg    string `json:"msg"`
+	IPInfo struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+		CNIP bool   `json:"cnip"`
+	} `json:"ipinfo"`
+	IPData struct {
+		Info1 string `json:"info1"`
+		Info2 string `json:"info2"`
+		Info3 string `json:"info3"`
+		ISP   string `json:"isp"`
+	} `json:"ipdata"`
+	ADCode struct {
+		O string `json:"o"`
+		P string `json:"p"`
+		C string `json:"c"`
+		N string `json:"n"`
+	} `json:"adcode"`
 }
 
 // 检查Meta刷新重定向
@@ -110,14 +106,35 @@ func getHostIP(hostname string) string {
 
 // 获取IP信息
 func getIPInfo(client *http.Client) (*IPInfo, error) {
-	resp, err := client.Get("https://ipapi.co/json/")
+	// 创建请求
+	req, err := http.NewRequest("GET", "https://api.vore.top/api/IPdata", nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %v", err)
+	}
+
+	// 设置请求头
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Cache-Control", "no-cache")
+
+	// 发送请求
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求IP信息失败: %v", err)
 	}
 	defer resp.Body.Close()
 
+	// 打印响应信息
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %v", err)
+	}
+	log.Printf("IP信息响应: Status=%d, Body=%s", resp.StatusCode, string(body))
+
 	var ipInfo IPInfo
-	if err := json.NewDecoder(resp.Body).Decode(&ipInfo); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&ipInfo); err != nil {
 		return nil, fmt.Errorf("解析IP信息失败: %v", err)
 	}
 
@@ -153,6 +170,7 @@ func init() {
 			"message": "服务器运行正常",
 		})
 	})
+
 
 	// 重定向检查服务
 	router.POST("/redirect-check", func(c *gin.Context) {
@@ -249,8 +267,8 @@ func init() {
 			})
 			return
 		}
-		log.Printf("当前IP信息: IP=%s, 国家=%s, 城市=%s, ISP=%s",
-			ipInfo.IP, ipInfo.CountryName, ipInfo.City, ipInfo.ORG)
+		log.Printf("当前IP信息: IP=%s, 国家=%s, 地区=%s, ISP=%s",
+			ipInfo.IPInfo.Text, ipInfo.IPData.Info1, ipInfo.IPData.Info2, ipInfo.IPData.ISP)
 
 		redirectPath := []string{req.Link}
 		currentURL := req.Link
@@ -268,10 +286,10 @@ func init() {
 					Status: 0,
 					Error:  "创建请求失败",
 					IPInfo: IPInfoResponse{
-						IP:      ipInfo.IP,
-						Country: ipInfo.CountryName,
-						Region:  ipInfo.Region,
-						City:    ipInfo.City,
+						IP:      ipInfo.IPInfo.Text,
+						Country: ipInfo.IPData.Info1,
+						Region:  ipInfo.IPData.Info2,
+						City:    ipInfo.IPData.Info3,
 					},
 				})
 				return
@@ -304,10 +322,10 @@ func init() {
 					Status: 0,
 					Error:  errorMsg,
 					IPInfo: IPInfoResponse{
-						IP:      ipInfo.IP,
-						Country: ipInfo.CountryName,
-						Region:  ipInfo.Region,
-						City:    ipInfo.City,
+						IP:      ipInfo.IPInfo.Text,
+						Country: ipInfo.IPData.Info1,
+						Region:  ipInfo.IPData.Info2,
+						City:    ipInfo.IPData.Info3,
 					},
 					TargetURL: currentURL,
 				})
@@ -384,10 +402,10 @@ func init() {
 		response := RedirectCheckResponse{
 			Status: 1,
 			IPInfo: IPInfoResponse{
-				IP:      ipInfo.IP,
-				Country: ipInfo.CountryName,
-				Region:  ipInfo.Region,
-				City:    ipInfo.City,
+				IP:      ipInfo.IPInfo.Text,
+				Country: ipInfo.IPData.Info1,
+				Region:  ipInfo.IPData.Info2,
+				City:    ipInfo.IPData.Info3,
 			},
 			RedirectPath:     redirectPath,
 			TargetURL:        redirectPath[len(redirectPath)-1],
