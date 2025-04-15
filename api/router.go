@@ -171,7 +171,6 @@ func init() {
 		})
 	})
 
-
 	// 重定向检查服务
 	router.POST("/redirect-check", func(c *gin.Context) {
 		startTime := time.Now()
@@ -339,6 +338,11 @@ func init() {
 				location := resp.Header.Get("Location")
 				if location != "" {
 					log.Printf("发现HTTP重定向: %s", location)
+
+					// 对重定向URL进行编码处理
+					location = encodeRedirectURL(location)
+					log.Printf("编码后的重定向URL: %s", location)
+
 					nextURL, err := url.Parse(location)
 					if err != nil {
 						log.Printf("解析重定向URL失败: %v", err)
@@ -373,6 +377,11 @@ func init() {
 
 				if metaLocation := checkMetaRefresh(string(body)); metaLocation != "" {
 					log.Printf("发现Meta刷新重定向: %s", metaLocation)
+
+					// 对Meta重定向URL进行编码处理
+					metaLocation = encodeRedirectURL(metaLocation)
+					log.Printf("编码后的Meta重定向URL: %s", metaLocation)
+
 					nextURL, err := url.Parse(metaLocation)
 					if err != nil {
 						log.Printf("解析Meta重定向URL失败: %v", err)
@@ -477,4 +486,47 @@ func createTrackingTemplate(urlStr string) string {
 
 	// 返回 {lpurl} 加上查询参数
 	return "{lpurl}" + queryPart
+}
+
+// 处理重定向URL，对特殊字符进行编码
+func encodeRedirectURL(urlStr string) string {
+	// 如果URL中包含空格，需要进行编码
+	if strings.Contains(urlStr, " ") {
+		// 分解URL为基础部分和查询参数
+		parsedURL, err := url.Parse(urlStr)
+		if err != nil {
+			return urlStr
+		}
+
+		// 编码路径部分
+		path := parsedURL.Path
+		if strings.Contains(path, " ") {
+			segments := strings.Split(path, "/")
+			for i, segment := range segments {
+				segments[i] = url.PathEscape(segment)
+			}
+			parsedURL.Path = strings.Join(segments, "/")
+		}
+
+		// 编码查询参数，确保空格编码为 %20 而不是 +
+		if parsedURL.RawQuery != "" {
+			values := parsedURL.Query()
+			encodedQuery := make([]string, 0)
+			for key, vals := range values {
+				for _, val := range vals {
+					// 使用 PathEscape 而不是 QueryEscape，确保空格编码为 %20
+					encodedQuery = append(encodedQuery, url.PathEscape(key)+"="+url.PathEscape(val))
+				}
+			}
+			parsedURL.RawQuery = strings.Join(encodedQuery, "&")
+		}
+
+		// 编码 Fragment 部分（如果有的话）
+		if parsedURL.Fragment != "" {
+			parsedURL.Fragment = url.PathEscape(parsedURL.Fragment)
+		}
+
+		return parsedURL.String()
+	}
+	return urlStr
 }
