@@ -75,8 +75,27 @@ type IPInfo struct {
 	} `json:"adcode"`
 }
 
+func checkWindowLocation(body string) string {
+    // log.Printf("检查Window刷新重定向")
+    // log.Printf(body)
+    
+    // Regular expression to match both window.location = '...' and window.location.replace('...')
+    pattern := `window\.location\.(replace|href)\s*\(\s*['"](.*?)['"]\s*\)`
+    re := regexp.MustCompile(pattern)
+    matches := re.FindStringSubmatch(body)
+    
+    if len(matches) > 2 {
+        // Unescape the extracted URL to handle escaped characters
+        url := matches[2]
+        url = strings.ReplaceAll(url, `\/`, `/`)
+        return url
+    }
+    return ""
+}
+
 // 检查Meta刷新重定向
 func checkMetaRefresh(body string) string {
+	// log.Printf("检查Meta刷新重定向")
 	patterns := []string{
 		`<meta\s+http-equiv="refresh"\s+content="0;\s*url=(.*?)"`,
 		`<meta\s+http-equiv="refresh"\s+content="0;url=(.*?)"`,
@@ -401,6 +420,34 @@ func init() {
 					redirectPath = append(redirectPath, currentURL)
 					continue
 				}
+
+				if windowLocation := checkWindowLocation(string(body)); windowLocation != "" {
+					log.Printf("发现window.location重定向: %s", windowLocation)
+			
+					// 对window.location重定向URL进行编码处理
+					windowLocation = encodeRedirectURL(windowLocation)
+					log.Printf("编码后的window.location重定向URL: %s", windowLocation)
+			
+					nextURL, err := url.Parse(windowLocation)
+					if err != nil {
+						log.Printf("解析window.location重定向URL失败: %v", err)
+						break
+					}
+			
+					if !nextURL.IsAbs() {
+						currentURLParsed, err := url.Parse(currentURL)
+						if err != nil {
+							log.Printf("解析当前URL失败: %v", err)
+							break
+						}
+						nextURL = currentURLParsed.ResolveReference(nextURL)
+					}
+			
+					currentURL = nextURL.String()
+					redirectPath = append(redirectPath, currentURL)
+					continue
+				}
+			
 			}
 
 			resp.Body.Close()
