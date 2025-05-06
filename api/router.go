@@ -80,8 +80,27 @@ type IPInfo struct {
 	} `json:"adcode"`
 }
 
+func checkWindowLocation(body string) string {
+    // log.Printf("检查Window刷新重定向")
+    // log.Printf(body)
+    
+    // Regular expression to match both window.location = '...' and window.location.replace('...')
+    pattern := `window\.location\.(replace|href)\s*\(\s*['"](.*?)['"]\s*\)`
+    re := regexp.MustCompile(pattern)
+    matches := re.FindStringSubmatch(body)
+    
+    if len(matches) > 2 {
+        // Unescape the extracted URL to handle escaped characters
+        url := matches[2]
+        url = strings.ReplaceAll(url, `\/`, `/`)
+        return url
+    }
+    return ""
+}
+
 // 检查Meta刷新重定向
 func checkMetaRefresh(body string) string {
+	// log.Printf("检查Meta刷新重定向")
 	patterns := []string{
 		`<meta\s+http-equiv="refresh"\s+content="0;\s*url=(.*?)"`,
 		`<meta\s+http-equiv="refresh"\s+content="0;url=(.*?)"`,
