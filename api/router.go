@@ -674,13 +674,34 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 		}
 	})
 
+	blockedURLs := []string{
+		"googletagmanager.com",
+		"doubleclick.net",
+		"ads.google.com",
+		"facebook.net",
+		"analytics.google.com",
+		"gstatic.com",
+	}
+
 	// 启用网络请求监听
 	chromedp.ListenTarget(ctx, func(ev interface{}) {
 		switch e := ev.(type) {
 		case *network.EventRequestWillBeSent:
 			if e.Type == network.ResourceTypeDocument {
-				log.Printf("检测到文档请求: %s", e.Request.URL)
+
+				requestURL := e.Request.URL
+
+				// 过滤掉不需要的 URL
+				for _, blocked := range blockedURLs {
+					if strings.Contains(requestURL, blocked) {
+						log.Printf("忽略请求: %s (匹配过滤关键词: %s)", requestURL, blocked)
+						return
+					}
+				}
+
+
 				if !containsURL(redirects, e.Request.URL) {
+					log.Printf("检测到文档请求: %s", e.Request.URL)
 					redirects = append(redirects, e.Request.URL)
 				}
 			}
