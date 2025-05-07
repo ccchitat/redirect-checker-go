@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
+
 	// "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/gin-gonic/gin"
@@ -618,18 +620,15 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 
 	// 如果提供了代理配置，添加代理设置
 	if proxyConfig != nil {
-		proxyURL := fmt.Sprintf("http://%s:%s@%s:%s",
-			proxyConfig.Username,
-			proxyConfig.Password,
+		proxyURL := fmt.Sprintf("%s:%s",
 			proxyConfig.Host,
 			proxyConfig.Port)
 
-		log.Printf("使用代理: %s", strings.Replace(proxyURL, proxyConfig.Password, "****", 1))
+		log.Printf("使用代理: %s", proxyURL)
 
 		opts = append(opts,
-			// chromedp.Flag("proxy-server", proxyURL),
-			chromedp.ProxyServer(proxyURL), 
-			chromedp.Flag("proxy-bypass-list", ""),
+			chromedp.ProxyServer(proxyURL),
+			chromedp.Flag("proxy-bypass-list", "<-loopback>"),
 		)
 	}
 
@@ -649,6 +648,32 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 	var redirects []string
 	redirects = append(redirects, initialURL)
 
+	// 处理代理认证
+	lctx, lcancel := context.WithCancel(ctx)
+	defer lcancel()
+	chromedp.ListenTarget(lctx, func(ev interface{}) {
+		switch ev := ev.(type) {
+		case *fetch.EventRequestPaused:
+			go func() {
+				_ = chromedp.Run(ctx, fetch.ContinueRequest(ev.RequestID))
+			}()
+		case *fetch.EventAuthRequired:
+			if ev.AuthChallenge.Source == fetch.AuthChallengeSourceProxy {
+				go func() {
+					_ = chromedp.Run(ctx,
+						fetch.ContinueWithAuth(ev.RequestID, &fetch.AuthChallengeResponse{
+							Response: fetch.AuthChallengeResponseResponseProvideCredentials,
+							Username: proxyConfig.Username,
+							Password: proxyConfig.Password,
+						}),
+						fetch.Disable(),
+					)
+					lcancel()
+				}()
+			}
+		}
+	})
+
 	// 启用网络请求监听
 	chromedp.ListenTarget(ctx, func(ev interface{}) {
 		switch e := ev.(type) {
@@ -662,20 +687,9 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 		}
 	})
 
-	// 监听新标签页打开
-	// chromedp.ListenBrowser(ctx, func(ev interface{}) {
-	// 	if e, ok := ev.(*target.EventTargetCreated); ok {
-	// 		if e.TargetInfo.Type == "page" && e.TargetInfo.URL != "" {
-	// 			log.Printf("检测到新标签页: %s", e.TargetInfo.URL)
-	// 			if !containsURL(redirects, e.TargetInfo.URL) {
-	// 				redirects = append(redirects, e.TargetInfo.URL)
-	// 			}
-	// 		}
-	// 	}
-	// })
-
 	// 启用网络监听并导航
 	if err := chromedp.Run(ctx,
+		fetch.Enable().WithHandleAuthRequests(true),
 		network.Enable(),
 		chromedp.Navigate(initialURL),
 		chromedp.WaitReady("body"),
@@ -684,6 +698,7 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 		return redirects, err
 	}
 
+	// 获取页面内容
 	// 智能等待：URL稳定则提前结束
 	var finalURL string
 	var lastURL string
@@ -707,6 +722,13 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 
 		if sameCount >= 3 {
 			log.Printf("URL已稳定: %s", finalURL)
+			// // 获取最终页面的内容
+			// var content string
+			// if err := chromedp.Run(ctx, chromedp.Evaluate(`document.body.innerText`, &content)); err != nil {
+			// 	log.Printf("获取页面内容失败: %v", err)
+			// } else {
+			// 	log.Printf("最终页面内容:\n%s", content)
+			// }
 			break
 		}
 
