@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 
 	// "github.com/chromedp/cdproto/target"
@@ -61,25 +60,15 @@ type RedirectCheckResponse struct {
 
 // IPInfo 结构体
 type IPInfo struct {
-	Code   int    `json:"code"`
-	Msg    string `json:"msg"`
-	IPInfo struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-		CNIP bool   `json:"cnip"`
-	} `json:"ipinfo"`
-	IPData struct {
-		Info1 string `json:"info1"`
-		Info2 string `json:"info2"`
-		Info3 string `json:"info3"`
-		ISP   string `json:"isp"`
-	} `json:"ipdata"`
-	ADCode struct {
-		O string `json:"o"`
-		P string `json:"p"`
-		C string `json:"c"`
-		N string `json:"n"`
-	} `json:"adcode"`
+	IP       string `json:"ip"`
+	Hostname string `json:"hostname"`
+	City     string `json:"city"`
+	Region   string `json:"region"`
+	Country  string `json:"country"`
+	Loc      string `json:"loc"`
+	Org      string `json:"org"`
+	Postal   string `json:"postal"`
+	Timezone string `json:"timezone"`
 }
 
 func checkWindowLocation(body string) string {
@@ -133,7 +122,7 @@ func getHostIP(hostname string) string {
 // 获取IP信息
 func getIPInfo(client *http.Client) (*IPInfo, error) {
 	// 创建请求
-	req, err := http.NewRequest("GET", "https://api.vore.top/api/IPdata", nil)
+	req, err := http.NewRequest("GET", "https://ipinfo.io/json", nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %v", err)
 	}
@@ -223,7 +212,7 @@ func init() {
 
 		// 设置默认超时时间为30秒
 		if req.Timeout <= 0 {
-			req.Timeout = 30
+			req.Timeout = 60
 			log.Printf("使用默认超时时间: %d秒", req.Timeout)
 		}
 
@@ -286,21 +275,17 @@ func init() {
 		// 获取IP信息
 		ipInfo, err := getIPInfo(client)
 		if err != nil {
-			log.Printf("获取IP信息失败: %v", err)
-			c.JSON(http.StatusOK, RedirectCheckResponse{
-				Status: 0,
-				Error:  "网络连接错误",
-				IPInfo: IPInfoResponse{
-					IP:      "未知",
-					Country: "未知",
-					Region:  "未知",
-					City:    "未知",
-				},
-			})
-			return
+			log.Printf("获取IP信息失败: %v，使用默认值继续执行", err)
+			ipInfo = &IPInfo{
+				IP:      "未知",
+				Country: "未知",
+				Region:  "未知",
+				City:    "未知",
+			}
+		} else {
+			log.Printf("当前IP信息: IP=%s, 国家=%s, 地区=%s, 城市=%s",
+				ipInfo.IP, ipInfo.Country, ipInfo.Region, ipInfo.City)
 		}
-		log.Printf("当前IP信息: IP=%s, 国家=%s, 地区=%s, ISP=%s",
-			ipInfo.IPInfo.Text, ipInfo.IPData.Info1, ipInfo.IPData.Info2, ipInfo.IPData.ISP)
 
 		redirectPath := []string{req.Link}
 
@@ -325,10 +310,10 @@ func init() {
 					Status: 0,
 					Error:  "浏览器跟踪失败: " + err.Error(),
 					IPInfo: IPInfoResponse{
-						IP:      ipInfo.IPInfo.Text,
-						Country: ipInfo.IPData.Info1,
-						Region:  ipInfo.IPData.Info2,
-						City:    ipInfo.IPData.Info3,
+						IP:      ipInfo.IP,
+						Country: ipInfo.Country,
+						Region:  ipInfo.Region,
+						City:    ipInfo.City,
 					},
 					TargetURL: req.Link,
 				})
@@ -355,10 +340,10 @@ func init() {
 						Status: 0,
 						Error:  "创建请求失败",
 						IPInfo: IPInfoResponse{
-							IP:      ipInfo.IPInfo.Text,
-							Country: ipInfo.IPData.Info1,
-							Region:  ipInfo.IPData.Info2,
-							City:    ipInfo.IPData.Info3,
+							IP:      ipInfo.IP,
+							Country: ipInfo.Country,
+							Region:  ipInfo.Region,
+							City:    ipInfo.City,
 						},
 					})
 					return
@@ -394,10 +379,10 @@ func init() {
 						Status: 0,
 						Error:  errorMsg,
 						IPInfo: IPInfoResponse{
-							IP:      ipInfo.IPInfo.Text,
-							Country: ipInfo.IPData.Info1,
-							Region:  ipInfo.IPData.Info2,
-							City:    ipInfo.IPData.Info3,
+							IP:      ipInfo.IP,
+							Country: ipInfo.Country,
+							Region:  ipInfo.Region,
+							City:    ipInfo.City,
 						},
 						TargetURL: currentURL,
 					})
@@ -483,10 +468,10 @@ func init() {
 		response := RedirectCheckResponse{
 			Status: 1,
 			IPInfo: IPInfoResponse{
-				IP:      ipInfo.IPInfo.Text,
-				Country: ipInfo.IPData.Info1,
-				Region:  ipInfo.IPData.Info2,
-				City:    ipInfo.IPData.Info3,
+				IP:      ipInfo.IP,
+				Country: ipInfo.Country,
+				Region:  ipInfo.Region,
+				City:    ipInfo.City,
 			},
 			RedirectPath:     redirectPath,
 			TargetURL:        redirectPath[len(redirectPath)-1],
@@ -648,61 +633,39 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 	var redirects []string
 	redirects = append(redirects, initialURL)
 
-	// 处理代理认证
-	lctx, lcancel := context.WithCancel(ctx)
-	defer lcancel()
-	chromedp.ListenTarget(lctx, func(ev interface{}) {
-		switch ev := ev.(type) {
-		case *fetch.EventRequestPaused:
-			go func() {
-				_ = chromedp.Run(ctx, fetch.ContinueRequest(ev.RequestID))
-			}()
-		case *fetch.EventAuthRequired:
-			if ev.AuthChallenge.Source == fetch.AuthChallengeSourceProxy {
-				go func() {
-					_ = chromedp.Run(ctx,
-						fetch.ContinueWithAuth(ev.RequestID, &fetch.AuthChallengeResponse{
-							Response: fetch.AuthChallengeResponseResponseProvideCredentials,
-							Username: proxyConfig.Username,
-							Password: proxyConfig.Password,
-						}),
-						fetch.Disable(),
-					)
-					lcancel()
-				}()
-			}
-		}
-	})
-
-	blockedURLs := []string{
-		"googletagmanager.com",
-		"doubleclick.net",
-		"ads.google.com",
-		"facebook.net",
-		"analytics.google.com",
-		"gstatic.com",
-	}
-
 	// 启用网络请求监听
 	chromedp.ListenTarget(ctx, func(ev interface{}) {
 		switch e := ev.(type) {
 		case *network.EventRequestWillBeSent:
 			if e.Type == network.ResourceTypeDocument {
+				// 检查是否是重定向响应
+				if e.RedirectResponse != nil {
+					requestURL := e.Request.URL
+					redirectURL := e.RedirectResponse.URL
+					statusCode := e.RedirectResponse.Status
 
-				requestURL := e.Request.URL
+					log.Printf("检测到重定向: %s -> %s (状态码: %d)",
+						redirectURL, requestURL, statusCode)
 
-				// 过滤掉不需要的 URL
-				for _, blocked := range blockedURLs {
-					if strings.Contains(requestURL, blocked) {
-						log.Printf("忽略请求: %s (匹配过滤关键词: %s)", requestURL, blocked)
-						return
+					if !containsURL(redirects, requestURL) {
+						redirects = append(redirects, requestURL)
 					}
+				} else {
+					requestURL := e.Request.URL
+					log.Printf("检测到文档请求: %s", requestURL)
 				}
+			}
+		case *network.EventResponseReceived:
+			if e.Type == network.ResourceTypeDocument {
+				// 检查响应状态码
+				if e.Response.Status >= 300 && e.Response.Status < 400 {
+					requestURL := e.Response.URL
+					log.Printf("检测到HTTP重定向响应: %s (状态码: %d)",
+						requestURL, e.Response.Status)
 
-
-				if !containsURL(redirects, e.Request.URL) {
-					log.Printf("检测到文档请求: %s", e.Request.URL)
-					redirects = append(redirects, e.Request.URL)
+					if !containsURL(redirects, requestURL) {
+						redirects = append(redirects, requestURL)
+					}
 				}
 			}
 		}
@@ -710,7 +673,6 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 
 	// 启用网络监听并导航
 	if err := chromedp.Run(ctx,
-		fetch.Enable().WithHandleAuthRequests(true),
 		network.Enable(),
 		chromedp.Navigate(initialURL),
 		chromedp.WaitReady("body"),
@@ -719,7 +681,6 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 		return redirects, err
 	}
 
-	// 获取页面内容
 	// 智能等待：URL稳定则提前结束
 	var finalURL string
 	var lastURL string
@@ -729,6 +690,13 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 	for time.Now().Before(deadline) {
 		err := chromedp.Run(ctx, chromedp.Evaluate(`window.location.href`, &finalURL))
 		if err != nil {
+			if err.Error() == "context deadline exceeded" {
+				log.Printf("URL检查超时，但已捕获的重定向路径: %v", redirects)
+				// 如果已经捕获到重定向，返回已捕获的路径
+				if len(redirects) > 1 {
+					return redirects, nil
+				}
+			}
 			break
 		}
 
@@ -743,13 +711,6 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 
 		if sameCount >= 3 {
 			log.Printf("URL已稳定: %s", finalURL)
-			// // 获取最终页面的内容
-			// var content string
-			// if err := chromedp.Run(ctx, chromedp.Evaluate(`document.body.innerText`, &content)); err != nil {
-			// 	log.Printf("获取页面内容失败: %v", err)
-			// } else {
-			// 	log.Printf("最终页面内容:\n%s", content)
-			// }
 			break
 		}
 
