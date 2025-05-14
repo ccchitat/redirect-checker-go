@@ -15,10 +15,13 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 
 	// "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/gin-gonic/gin"
+
+	"github.com/chromedp/cdproto/cdp"
 )
 
 var router *gin.Engine
@@ -212,7 +215,7 @@ func init() {
 
 		// 设置默认超时时间为30秒
 		if req.Timeout <= 0 {
-			req.Timeout = 60
+			req.Timeout = 30
 			log.Printf("使用默认超时时间: %d秒", req.Timeout)
 		}
 
@@ -432,6 +435,33 @@ func init() {
 					}
 					resp.Body.Close()
 
+					// 检查window.location重定向
+					if locationURL := checkWindowLocation(string(body)); locationURL != "" {
+						log.Printf("发现Window.location重定向: %s", locationURL)
+
+						// 对Window.location重定向URL进行编码处理
+						locationURL = encodeRedirectURL(locationURL)
+						log.Printf("编码后的Window.location重定向URL: %s", locationURL)
+
+						nextURL, err := url.Parse(locationURL)
+						if err != nil {
+							log.Printf("解析Window.location重定向URL失败: %v", err)
+							break
+						}
+
+						if !nextURL.IsAbs() {
+							currentURLParsed, err := url.Parse(currentURL)
+							if err != nil {
+								log.Printf("解析当前URL失败: %v", err)
+								break
+							}
+							nextURL = currentURLParsed.ResolveReference(nextURL)
+						}
+
+						redirectPath = append(redirectPath, nextURL.String())
+						continue
+					}
+
 					if metaLocation := checkMetaRefresh(string(body)); metaLocation != "" {
 						log.Printf("发现Meta刷新重定向: %s", metaLocation)
 
@@ -589,6 +619,14 @@ func encodeRedirectURL(urlStr string) string {
 	return urlStr
 }
 
+const evalFuncs = `
+(function(){
+    window.setTimeout = function(fn, delay) {
+        fn();
+    }
+})()
+`
+
 // 使用chromedp跟踪URL重定向
 func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig) ([]string, error) {
 	log.Printf("使用Chromedp浏览器开始跟踪重定向: %s", initialURL)
@@ -600,6 +638,7 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("blink-settings", "imagesEnabled=false"),
 		chromedp.UserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1"),
 	)
 
@@ -629,94 +668,92 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 	ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
+	// 为停止监听器创建事件上下文
+	eventCtx, cancelEvent := context.WithCancel(ctx)
+	defer cancelEvent()
+
 	// 存储重定向路径
 	var redirects []string
 	redirects = append(redirects, initialURL)
+	var requestID network.RequestID
+	var frameID cdp.FrameID
 
-	// 启用网络请求监听
 	chromedp.ListenTarget(ctx, func(ev interface{}) {
 		switch e := ev.(type) {
-		case *network.EventRequestWillBeSent:
-			if e.Type == network.ResourceTypeDocument {
-				// 检查是否是重定向响应
-				if e.RedirectResponse != nil {
-					requestURL := e.Request.URL
-					redirectURL := e.RedirectResponse.URL
-					statusCode := e.RedirectResponse.Status
-
-					log.Printf("检测到重定向: %s -> %s (状态码: %d)",
-						redirectURL, requestURL, statusCode)
-
-					if !containsURL(redirects, requestURL) {
-						redirects = append(redirects, requestURL)
-					}
-				} else {
-					requestURL := e.Request.URL
-					log.Printf("检测到文档请求: %s", requestURL)
-				}
-			}
 		case *network.EventResponseReceived:
-			if e.Type == network.ResourceTypeDocument {
-				// 检查响应状态码
-				if e.Response.Status >= 300 && e.Response.Status < 400 {
-					requestURL := e.Response.URL
-					log.Printf("检测到HTTP重定向响应: %s (状态码: %d)",
-						requestURL, e.Response.Status)
-
-					if !containsURL(redirects, requestURL) {
-						redirects = append(redirects, requestURL)
-					}
+			if containsURL(redirects, e.Response.URL) {
+				fmt.Printf("%#v\n 状态码: %d\n", e.Response.URL, e.Response.Status)
+			}
+		// 	fmt.Printf("响应状态码: %d, URL: %s\n", e.Response.Status, e.Response.URL)
+		case *page.EventFrameNavigated:
+			// 检查URL是否在重定向列表中
+			if e.Frame.ParentID == "" {
+				if containsURL(redirects, e.Frame.URL) {
+					// fmt.Printf("parentID: %s 主框架跳转到: %s\n  frameID: %s\n", e.Frame.ParentID, e.Frame.URL, e.Frame.ID)
+					// fmt.Printf("%#v\n", e.Frame.URL, e.Response.Status)
+					requestID = "" // 清空requestID
 				}
 			}
+			// fmt.Printf("主框架跳转到: %s\n", e.Frame.URL)
+			// fmt.Printf("%s 主框架跳转到: %#v\n", e.Frame.ID, e.Frame.URL)
+
 		}
 	})
 
-	// 启用网络监听并导航
+	chromedp.ListenTarget(eventCtx, func(ev interface{}) {
+		if ev, ok := ev.(*network.EventRequestWillBeSent); ok {
+
+			if frameID == "" {
+				frameID = ev.FrameID
+			}
+
+			if requestID == "" && ev.FrameID == frameID {
+				// is it a reliable way to determine the initial request?
+				if ev.Type == "Document" {
+					requestID = ev.RequestID
+					if containsURL(redirects, ev.Request.URL) == false {
+						redirects = append(redirects, ev.Request.URL) // 添加到重定向列表
+						fmt.Printf("requestID: %s 类型 %s 请求URL: %#v\n  frameID: %s\n", ev.RequestID, ev.Type, ev.Request.URL, ev.FrameID)
+					} else {
+						return
+					}
+				}
+			}
+
+			if ev.RequestID == requestID && ev.Type == "Document" && ev.FrameID == frameID {
+				if containsURL(redirects, ev.Request.URL) == false {
+					redirects = append(redirects, ev.Request.URL) // 添加到重定向列表
+				} else {
+					return
+				}
+				// fmt.Printf("%#v\n", ev.Request.URL)
+
+				if ev.RedirectResponse != nil {
+					fmt.Printf("重定向: %s → %s, 状态码: %d\n", ev.RedirectResponse.URL, ev.Request.URL, ev.RedirectResponse.Status)
+				}
+			}
+
+			// if ev.Type == "Document" {
+			// 	fmt.Printf("记录的requestID: %s\n", requestID)
+			// 	fmt.Printf("%s %s 请求URL: %#v\n", ev.Type, ev.RequestID, ev.Request.URL)
+			// }
+
+		}
+	})
+
+	// 执行导航
 	if err := chromedp.Run(ctx,
-		network.Enable(),
+		chromedp.ActionFunc(func(c context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(evalFuncs).Do(c)
+			return err
+		}),
 		chromedp.Navigate(initialURL),
 		chromedp.WaitReady("body"),
 	); err != nil {
 		log.Printf("导航失败: %v", err)
-		return redirects, err
 	}
 
-	// 智能等待：URL稳定则提前结束
-	var finalURL string
-	var lastURL string
-	sameCount := 0
-	deadline := time.Now().Add(15 * time.Second)
-
-	for time.Now().Before(deadline) {
-		err := chromedp.Run(ctx, chromedp.Evaluate(`window.location.href`, &finalURL))
-		if err != nil {
-			if err.Error() == "context deadline exceeded" {
-				log.Printf("URL检查超时，但已捕获的重定向路径: %v", redirects)
-				// 如果已经捕获到重定向，返回已捕获的路径
-				if len(redirects) > 1 {
-					return redirects, nil
-				}
-			}
-			break
-		}
-
-		if finalURL == lastURL {
-			sameCount++
-		} else {
-			sameCount = 0
-			if !containsURL(redirects, finalURL) {
-				redirects = append(redirects, finalURL)
-			}
-		}
-
-		if sameCount >= 3 {
-			log.Printf("URL已稳定: %s", finalURL)
-			break
-		}
-
-		lastURL = finalURL
-		time.Sleep(1 * time.Second)
-	}
+	cancelEvent()
 
 	// 打印最终的重定向路径
 	log.Printf("重定向跟踪完成，共检测到 %d 个路径:", len(redirects))
