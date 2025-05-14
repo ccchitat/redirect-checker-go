@@ -16,6 +16,7 @@ import (
 
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/fetch"
 
 	// "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -672,6 +673,33 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 	eventCtx, cancelEvent := context.WithCancel(ctx)
 	defer cancelEvent()
 
+
+	// 处理代理认证
+	lctx, lcancel := context.WithCancel(ctx)
+	defer lcancel()
+	chromedp.ListenTarget(lctx, func(ev interface{}) {
+		switch ev := ev.(type) {
+		case *fetch.EventRequestPaused:
+			go func() {
+				_ = chromedp.Run(ctx, fetch.ContinueRequest(ev.RequestID))
+			}()
+		case *fetch.EventAuthRequired:
+			if ev.AuthChallenge.Source == fetch.AuthChallengeSourceProxy {
+				go func() {
+					_ = chromedp.Run(ctx,
+						fetch.ContinueWithAuth(ev.RequestID, &fetch.AuthChallengeResponse{
+							Response: fetch.AuthChallengeResponseResponseProvideCredentials,
+							Username: proxyConfig.Username,
+							Password: proxyConfig.Password,
+						}),
+						fetch.Disable(),
+					)
+					lcancel()
+				}()
+			}
+		}
+	})
+
 	// 存储重定向路径
 	var redirects []string
 	redirects = append(redirects, initialURL)
@@ -743,6 +771,8 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 
 	// 执行导航
 	if err := chromedp.Run(ctx,
+		fetch.Enable().WithHandleAuthRequests(true),
+		network.Enable(),
 		chromedp.ActionFunc(func(c context.Context) error {
 			_, err := page.AddScriptToEvaluateOnNewDocument(evalFuncs).Do(c)
 			return err
