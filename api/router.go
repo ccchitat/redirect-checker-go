@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/cdproto/fetch"
 
 	// "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -96,6 +96,7 @@ func checkWindowLocation(body string) string {
 // 检查Meta刷新重定向
 func checkMetaRefresh(body string) string {
 	// log.Printf("检查Meta刷新重定向")
+	// log.Printf(body)
 	patterns := []string{
 		`<meta\s+http-equiv="refresh"\s+content="0;\s*url=(.*?)"`,
 		`<meta\s+http-equiv="refresh"\s+content="0;url=(.*?)"`,
@@ -106,9 +107,17 @@ func checkMetaRefresh(body string) string {
 	bodyLower := strings.ToLower(body)
 	for _, pattern := range patterns {
 		re := regexp.MustCompile(pattern)
-		matches := re.FindStringSubmatch(bodyLower)
-		if len(matches) > 1 {
-			return strings.Trim(matches[1], `"'`)
+		// 使用 FindStringSubmatchIndex 获取匹配的索引
+		matchesIndices := re.FindStringSubmatchIndex(bodyLower)
+
+		// matchesIndices 包含整个匹配的开始和结束，以及每个捕获组的开始和结束
+		// 我们关心的是第一个捕获组 (url=...)
+		if len(matchesIndices) > 3 { // 0,1 是整个匹配, 2,3 是第一个捕获组
+			// 从原始 body 中根据索引提取 URL，以保留大小写
+			urlStartIndex := matchesIndices[2]
+			urlEndIndex := matchesIndices[3]
+			extractedURL := body[urlStartIndex:urlEndIndex]
+			return strings.Trim(extractedURL, `"'`)
 		}
 	}
 	return ""
@@ -672,7 +681,6 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 	// 为停止监听器创建事件上下文
 	eventCtx, cancelEvent := context.WithCancel(ctx)
 	defer cancelEvent()
-
 
 	// 处理代理认证
 	lctx, lcancel := context.WithCancel(ctx)
