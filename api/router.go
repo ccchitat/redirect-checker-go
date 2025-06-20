@@ -14,15 +14,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
-
-	// "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/gin-gonic/gin"
+)
 
-	"github.com/chromedp/cdproto/cdp"
+const (
+	// VERSION 当前版本号，每次修改代码后手动更新
+	VERSION = "1.0.1"
 )
 
 var router *gin.Engine
@@ -79,16 +81,31 @@ func checkWindowLocation(body string) string {
 	// log.Printf("检查Window刷新重定向")
 	// log.Printf(body)
 
-	// Regular expression to match both window.location = '...' and window.location.replace('...')
-	pattern := `window\.location\.(replace|href)\s*\(\s*['"](.*?)['"]\s*\)`
-	re := regexp.MustCompile(pattern)
-	matches := re.FindStringSubmatch(body)
+	// 定义多个正则表达式来匹配不同的location跳转格式
+	patterns := []string{
+		`window\.location\.(replace|href)\s*\(\s*['"](.*?)['"]\s*\)`,             // window.location.replace('...') 或 window.location.href('...')
+		`window\.location\s*=\s*['"](.*?)['"]`,                                   // window.location = '...'
+		`location\.(replace|href)\s*\(\s*['"](.*?)['"]\s*\)`,                     // location.replace('...') 或 location.href('...')
+		`location\s*=\s*['"](.*?)['"]`,                                           // location = '...'
+		`var\s+\w+\s*=\s*['"](https?://.*?)['"][\s\S]*?location\.replace\(\w+\)`, // var u = '...' + location.replace(u)
+	}
 
-	if len(matches) > 2 {
-		// Unescape the extracted URL to handle escaped characters
-		url := matches[2]
-		url = strings.ReplaceAll(url, `\/`, `/`)
-		return url
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		matches := re.FindStringSubmatch(body)
+
+		if len(matches) > 0 {
+			// 对于最后一种模式（变量赋值），直接返回第一个捕获组
+			if strings.Contains(pattern, "var") && len(matches) > 1 {
+				url := matches[1]
+				url = strings.ReplaceAll(url, `\/`, `/`)
+				return url
+			}
+			// 对于其他模式，返回最后一个捕获组
+			url := matches[len(matches)-1]
+			url = strings.ReplaceAll(url, `\/`, `/`)
+			return url
+		}
 	}
 	return ""
 }
@@ -196,6 +213,7 @@ func init() {
 	router.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "服务器运行正常",
+			"version": VERSION,
 		})
 	})
 
