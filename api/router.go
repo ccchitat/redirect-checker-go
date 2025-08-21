@@ -24,7 +24,7 @@ import (
 
 const (
 	// VERSION 当前版本号，每次修改代码后手动更新
-	VERSION = "1.0.1"
+	VERSION = "1.0.2"
 )
 
 var router *gin.Engine
@@ -38,12 +38,13 @@ type ProxyConfig struct {
 
 // 请求结构体
 type RedirectCheckRequest struct {
-	EnableProxy *bool       `json:"enable_proxy"` // 是否启用代理，未传入时默认为true
-	UseBrowser  *bool       `json:"use_browser"`  // 是否使用浏览器模式追踪重定向，未传入时默认为false
-	Proxy       ProxyConfig `json:"proxy"`
-	Link        string      `json:"link" binding:"required"`
-	Timeout     int         `json:"timeout"` // 超时时间（秒）
-	Referer     string      `json:"referer"` // 请求来源
+	EnableProxy  *bool       `json:"enable_proxy"` // 是否启用代理，未传入时默认为true
+	UseBrowser   *bool       `json:"use_browser"`  // 是否使用浏览器模式追踪重定向，未传入时默认为false
+	Proxy        ProxyConfig `json:"proxy"`
+	Link         string      `json:"link" binding:"required"`
+	Timeout      int         `json:"timeout"`       // 超时时间（秒）
+	Referer      string      `json:"referer"`       // 请求来源
+	ReverseIndex int         `json:"reverse_index"` // 取倒数第N条（默认0表示最后一条，1表示倒数第二条）
 }
 
 // IP信息响应结构体
@@ -522,6 +523,21 @@ func init() {
 			}
 		}
 
+		// 根据 reverse_index 选择倒数第 N 条的 URL
+		selectedFromEnd := req.ReverseIndex
+		if selectedFromEnd < 0 {
+			selectedFromEnd = 0
+		}
+		if selectedFromEnd >= len(redirectPath) {
+			selectedFromEnd = len(redirectPath) - 1
+		}
+		selectedIndex := len(redirectPath) - 1 - selectedFromEnd
+		if selectedIndex < 0 {
+			selectedIndex = 0
+		}
+		selectedURL := redirectPath[selectedIndex]
+		log.Printf("根据 reverse_index=%d 选取 URL: %s (索引: %d/%d)", req.ReverseIndex, selectedURL, selectedIndex, len(redirectPath)-1)
+
 		// 成功响应
 		response := RedirectCheckResponse{
 			Status: 1,
@@ -532,8 +548,8 @@ func init() {
 				City:    ipInfo.City,
 			},
 			RedirectPath:     redirectPath,
-			TargetURL:        redirectPath[len(redirectPath)-1],
-			TrackingTemplate: createTrackingTemplate(redirectPath[len(redirectPath)-1]),
+			TargetURL:        selectedURL,
+			TrackingTemplate: createTrackingTemplate(selectedURL),
 		}
 
 		totalDuration := time.Since(startTime)
