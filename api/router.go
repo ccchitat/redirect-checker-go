@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"strings"
@@ -141,6 +142,56 @@ func checkMetaRefresh(body string) string {
 	return ""
 }
 
+// 基于上下文区分 window.location 是自动还是手动触发（启发式）
+// kind 取值: "auto", "manual", "legacy_auto", "unknown"
+func detectWindowLocation(body string) (string, string) {
+	patterns := []string{
+		`window\.location\.(replace|href)\s*\(\s*['\"](.*?)['\"]\s*\)`,
+		`window\.location\s*=\s*['\"](.*?)['\"]`,
+		`location\.(replace|href)\s*\(\s*['\"](.*?)['\"]\s*\)`,
+		`location\s*=\s*['\"](.*?)['\"]`,
+	}
+
+	lower := strings.ToLower(body)
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		idx := re.FindStringSubmatchIndex(lower)
+		if len(idx) == 0 {
+			continue
+		}
+		// 捕获组对应的 URL 在最后一个分组
+		var urlStr string
+		// 提取原始大小写 URL
+		if len(idx) >= 4 {
+			urlStr = body[idx[len(idx)-2]:idx[len(idx)-1]]
+		}
+		// 上下文窗口
+		start := idx[0] - 300
+		if start < 0 {
+			start = 0
+		}
+		end := idx[1] + 300
+		if end > len(lower) {
+			end = len(lower)
+		}
+		ctx := lower[start:end]
+
+		// IE 兼容判断: document.documentMode
+		if strings.Contains(ctx, "document.documentmode") {
+			return strings.ReplaceAll(urlStr, `\/`, `/`), "legacy_auto"
+		}
+		// 事件绑定/用户交互线索
+		if strings.Contains(ctx, "addeventlistener(\"click\"") || strings.Contains(ctx, "addeventlistener('click'") ||
+			strings.Contains(ctx, ".onclick") || strings.Contains(ctx, " onlick") || strings.Contains(ctx, "on('click'") ||
+			strings.Contains(ctx, "=>") || strings.Contains(ctx, "function(") {
+			return strings.ReplaceAll(urlStr, `\/`, `/`), "manual"
+		}
+		// 其它默认判为自动（启发式）
+		return strings.ReplaceAll(urlStr, `\/`, `/`), "auto"
+	}
+	return "", ""
+}
+
 // 获取域名的IP地址
 func getHostIP(hostname string) string {
 	ips, err := net.LookupHost(hostname)
@@ -222,7 +273,8 @@ func init() {
 	router.POST("/redirect-check", func(c *gin.Context) {
 		startTime := time.Now()
 		clientIP := getClientIP(c)
-		log.Printf("开始处理请求: %v, 客户端IP: %s", startTime, clientIP)
+		reqID := fmt.Sprintf("RID-%d", startTime.UnixNano())
+		log.Printf("[%s] 开始处理请求: %v, 客户端IP: %s", reqID, startTime, clientIP)
 
 		var req RedirectCheckRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -235,39 +287,41 @@ func init() {
 		targetURL, err := url.Parse(req.Link)
 		if err == nil {
 			targetIP := getHostIP(targetURL.Hostname())
-			log.Printf("请求参数: URL=%s (IP: %s), EnableProxy=%v, UseBrowser=%v, Timeout=%d",
-				req.Link, targetIP, req.EnableProxy, req.UseBrowser, req.Timeout)
+			log.Printf("[%s] 请求参数: URL=%s (IP: %s), EnableProxy=%v, UseBrowser=%v, Timeout=%d, ReverseIndex=%d",
+				reqID, req.Link, targetIP, req.EnableProxy, req.UseBrowser, req.Timeout, req.ReverseIndex)
 		} else {
-			log.Printf("请求参数: URL=%s (URL解析失败), EnableProxy=%v, UseBrowser=%v, Timeout=%d",
-				req.Link, req.EnableProxy, req.UseBrowser, req.Timeout)
+			log.Printf("[%s] 请求参数: URL=%s (URL解析失败), EnableProxy=%v, UseBrowser=%v, Timeout=%d, ReverseIndex=%d",
+				reqID, req.Link, req.EnableProxy, req.UseBrowser, req.Timeout, req.ReverseIndex)
 		}
 
-		// 设置默认超时时间为30秒
+		// 设置默认超时时间为60秒
 		if req.Timeout <= 0 {
-			req.Timeout = 30
-			log.Printf("使用默认超时时间: %d秒", req.Timeout)
+			req.Timeout = 60
+			log.Printf("[%s] 使用默认超时时间: %d秒", reqID, req.Timeout)
 		}
 
 		// 设置默认启用代理
 		if req.EnableProxy == nil {
 			defaultValue := true
 			req.EnableProxy = &defaultValue
-			log.Printf("默认启用代理")
+			log.Printf("[%s] 默认启用代理", reqID)
 		}
 
 		// 设置默认不使用浏览器
 		if req.UseBrowser == nil {
 			defaultValue := false
 			req.UseBrowser = &defaultValue
-			log.Printf("默认不使用浏览器模式")
+			log.Printf("[%s] 默认不使用浏览器模式", reqID)
 		}
 
-		// 创建HTTP客户端
+		// 创建HTTP客户端（默认使用系统代理设置）
 		transport := &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
 			TLSHandshakeTimeout:   time.Duration(req.Timeout) * time.Second,
 			ResponseHeaderTimeout: time.Duration(req.Timeout) * time.Second,
 			ExpectContinueTimeout: time.Duration(req.Timeout) * time.Second,
-			DisableKeepAlives:     true, // 禁用连接重用
+			DisableKeepAlives:     false, // 启用连接重用，提升与CDN交互稳定性
+			ForceAttemptHTTP2:     true,
 		}
 
 		// 如果启用代理，设置代理配置
@@ -281,7 +335,8 @@ func init() {
 
 			// 解析代理服务器IP
 			proxyIP := getHostIP(req.Proxy.Host)
-			log.Printf("使用代理: %s (IP: %s)",
+			log.Printf("[%s] 使用代理: %s (IP: %s)",
+				reqID,
 				strings.Replace(proxyURL, req.Proxy.Password, "****", 1),
 				proxyIP)
 
@@ -294,11 +349,16 @@ func init() {
 			}
 
 			transport.Proxy = http.ProxyURL(proxy)
+		} else {
+			// 未显式启用代理时，沿用系统代理（HTTP_PROXY/HTTPS_PROXY）
+			log.Printf("[%s] 未指定自定义代理，使用系统代理（若已在环境中配置）", reqID)
 		}
 
+		jar, _ := cookiejar.New(nil)
 		client := &http.Client{
 			Transport: transport,
 			Timeout:   time.Duration(req.Timeout) * time.Second,
+			Jar:       jar,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -307,7 +367,7 @@ func init() {
 		// 获取IP信息
 		ipInfo, err := getIPInfo(client)
 		if err != nil {
-			log.Printf("获取IP信息失败: %v，使用默认值继续执行", err)
+			log.Printf("[%s] 获取IP信息失败: %v，使用默认值继续执行", reqID, err)
 			ipInfo = &IPInfo{
 				IP:      "未知",
 				Country: "未知",
@@ -315,29 +375,29 @@ func init() {
 				City:    "未知",
 			}
 		} else {
-			log.Printf("当前IP信息: IP=%s, 国家=%s, 地区=%s, 城市=%s",
-				ipInfo.IP, ipInfo.Country, ipInfo.Region, ipInfo.City)
+			log.Printf("[%s] 当前IP信息: IP=%s, 国家=%s, 地区=%s, 城市=%s",
+				reqID, ipInfo.IP, ipInfo.Country, ipInfo.Region, ipInfo.City)
 		}
 
 		redirectPath := []string{req.Link}
 
 		// 根据是否使用浏览器模式选择不同的重定向检查方法
 		if *req.UseBrowser {
-			log.Printf("使用无头浏览器模式跟踪重定向，URL: %s, 超时: %d秒", req.Link, req.Timeout)
+			log.Printf("[%s] 使用无头浏览器模式跟踪重定向，URL: %s, 超时: %d秒", reqID, req.Link, req.Timeout)
 
 			// 根据是否启用代理决定传入的代理配置
 			var proxyConfig *ProxyConfig
 			if *req.EnableProxy {
 				proxyConfig = &req.Proxy
-				log.Printf("无头浏览器模式启用代理")
+				log.Printf("[%s] 无头浏览器模式启用代理", reqID)
 			} else {
-				log.Printf("无头浏览器模式不使用代理")
+				log.Printf("[%s] 无头浏览器模式不使用代理", reqID)
 			}
 
 			// 使用chromedp进行重定向跟踪
 			paths, err := traceWithChromedp(req.Link, req.Timeout, proxyConfig)
 			if err != nil {
-				log.Printf("无头浏览器跟踪失败: %v", err)
+				log.Printf("[%s] 无头浏览器跟踪失败: %v", reqID, err)
 				c.JSON(http.StatusOK, RedirectCheckResponse{
 					Status: 0,
 					Error:  "浏览器跟踪失败: " + err.Error(),
@@ -353,12 +413,13 @@ func init() {
 			}
 
 			redirectPath = paths
-			log.Printf("无头浏览器跟踪完成，共发现 %d 个重定向路径", len(redirectPath))
+			log.Printf("[%s] 无头浏览器跟踪完成，共发现 %d 个重定向路径", reqID, len(redirectPath))
 		} else {
 			// 使用标准HTTP客户端模式跟踪重定向
-			log.Printf("使用标准HTTP客户端模式跟踪重定向，URL: %s, 超时: %d秒", req.Link, req.Timeout)
+			log.Printf("[%s] 使用标准HTTP客户端模式跟踪重定向，URL: %s, 超时: %d秒", reqID, req.Link, req.Timeout)
 
 			// 检查重定向
+			stepCount := 0
 			for i := 0; i < 10; i++ {
 				parsedURL, _ := url.Parse(redirectPath[len(redirectPath)-1])
 				currentIP := getHostIP(parsedURL.Hostname())
@@ -384,7 +445,7 @@ func init() {
 				// 设置默认请求头
 				reqObj.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 				reqObj.Header.Set("Accept-Language", "en-US,en;q=0.9")
-				reqObj.Header.Set("Connection", "close")
+				// 与浏览器一致：不强制关闭连接
 				if req.Referer != "" {
 					reqObj.Header.Set("Referer", req.Referer)
 				}
@@ -393,14 +454,14 @@ func init() {
 				// 默认移动设备User-Agent
 				reqObj.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)")
 
-				log.Printf("开始第 %d 次请求: %s (IP: %s) Referer: %s", i+1, currentURL, currentIP, req.Referer)
+				log.Printf("[%s] 开始第 %d 次请求: %s (IP: %s) Referer: %s", reqID, i+1, currentURL, currentIP, req.Referer)
 
 				resp, err := client.Do(reqObj)
 				reqDuration := time.Since(reqStartTime)
-				log.Printf("请求耗时: %v", reqDuration)
+				log.Printf("[%s] 请求耗时: %v", reqID, reqDuration)
 
 				if err != nil {
-					log.Printf("请求失败: %v (类型: %T)", err, err)
+					log.Printf("[%s] 请求失败: %v (类型: %T)", reqID, err, err)
 					errorMsg := "网络连接错误"
 					if strings.Contains(err.Error(), "timeout") {
 						errorMsg = "网络连接错误"
@@ -421,17 +482,17 @@ func init() {
 					return
 				}
 
-				log.Printf("收到响应: 状态码=%d, URL=%s", resp.StatusCode, currentURL)
+				log.Printf("[%s] 收到响应: 状态码=%d, URL=%s", reqID, resp.StatusCode, currentURL)
 
 				// 检查HTTP重定向
 				if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 					location := resp.Header.Get("Location")
 					if location != "" {
-						log.Printf("发现HTTP重定向: %s", location)
+						log.Printf("[%s] 发现HTTP重定向: %s", reqID, location)
 
 						// 对重定向URL进行编码处理
 						location = encodeRedirectURL(location)
-						log.Printf("编码后的重定向URL: %s", location)
+						log.Printf("[%s] 编码后的重定向URL: %s", reqID, location)
 
 						nextURL, err := url.Parse(location)
 						if err != nil {
@@ -442,12 +503,22 @@ func init() {
 						if !nextURL.IsAbs() {
 							currentURLParsed, err := url.Parse(currentURL)
 							if err != nil {
-								log.Printf("解析当前URL失败: %v", err)
+								log.Printf("[%s] 解析当前URL失败: %v", reqID, err)
 								break
 							}
 							nextURL = currentURLParsed.ResolveReference(nextURL)
 						}
 
+						// 去重防循环
+						if containsURL(redirectPath, nextURL.String()) {
+							log.Printf("[%s] 目标URL已在链路中，跳过重复: %s", reqID, nextURL.String())
+							resp.Body.Close()
+							break
+						}
+
+						nextIP := getHostIP(nextURL.Hostname())
+						stepCount++
+						log.Printf("[%s] STEP %d [HTTP %d]: %s (IP: %s) -> %s (IP: %s)", reqID, stepCount, resp.StatusCode, currentURL, currentIP, nextURL.String(), nextIP)
 						redirectPath = append(redirectPath, nextURL.String())
 						resp.Body.Close()
 						continue
@@ -456,66 +527,74 @@ func init() {
 
 				// 检查meta刷新重定向
 				if resp.StatusCode == 200 {
-					body, err := io.ReadAll(resp.Body)
-					if err != nil {
-						log.Printf("读取响应体失败: %v", err)
+					contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+					if contentType == "" || strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml") {
+						const maxPeekBytes = 256 * 1024
+						limited := io.LimitReader(resp.Body, maxPeekBytes)
+						body, err := io.ReadAll(limited)
+						if err != nil {
+							log.Printf("[%s] 读取响应体失败: %v", reqID, err)
+							resp.Body.Close()
+							break
+						}
 						resp.Body.Close()
-						break
-					}
-					resp.Body.Close()
+						log.Printf("[%s] 已读取页面前 %d 字节用于重定向检测, Content-Type=%s", reqID, len(body), contentType)
 
-					// 检查window.location重定向
-					if locationURL := checkWindowLocation(string(body)); locationURL != "" {
-						log.Printf("发现Window.location重定向: %s", locationURL)
-
-						// 对Window.location重定向URL进行编码处理
-						locationURL = encodeRedirectURL(locationURL)
-						log.Printf("编码后的Window.location重定向URL: %s", locationURL)
-
-						nextURL, err := url.Parse(locationURL)
-						if err != nil {
-							log.Printf("解析Window.location重定向URL失败: %v", err)
-							break
+						// window.location（仅自动/IE兼容自动）
+						if loc, kind := detectWindowLocation(string(body)); loc != "" {
+							log.Printf("[%s] 发现Window.location(%s): %s", reqID, kind, loc)
+							// 仅自动/IE兼容的自动跳转会跟随；manual 只记录不跟随
+							if kind == "auto" || kind == "legacy_auto" {
+								locationURL := encodeRedirectURL(loc)
+								log.Printf("[%s] 编码后的Window.location重定向URL: %s", reqID, locationURL)
+								nextURL, err := url.Parse(locationURL)
+								if err == nil {
+									if !nextURL.IsAbs() {
+										currentURLParsed, err := url.Parse(currentURL)
+										if err == nil {
+											nextURL = currentURLParsed.ResolveReference(nextURL)
+										}
+									}
+									if !containsURL(redirectPath, nextURL.String()) {
+										nextIP := getHostIP(nextURL.Hostname())
+										stepCount++
+										log.Printf("[%s] STEP %d [WINDOW-%s]: %s (IP: %s) -> %s (IP: %s)", reqID, stepCount, kind, currentURL, currentIP, nextURL.String(), nextIP)
+										redirectPath = append(redirectPath, nextURL.String())
+										continue
+									}
+								}
+							}
 						}
 
-						if !nextURL.IsAbs() {
-							currentURLParsed, err := url.Parse(currentURL)
+						if metaLocation := checkMetaRefresh(string(body)); metaLocation != "" {
+							log.Printf("[%s] 发现Meta刷新重定向: %s", reqID, metaLocation)
+							metaLocation = encodeRedirectURL(metaLocation)
+							log.Printf("[%s] 编码后的Meta重定向URL: %s", reqID, metaLocation)
+							nextURL, err := url.Parse(metaLocation)
 							if err != nil {
-								log.Printf("解析当前URL失败: %v", err)
+								log.Printf("解析Meta重定向URL失败: %v", err)
 								break
 							}
-							nextURL = currentURLParsed.ResolveReference(nextURL)
-						}
-
-						redirectPath = append(redirectPath, nextURL.String())
-						continue
-					}
-
-					if metaLocation := checkMetaRefresh(string(body)); metaLocation != "" {
-						log.Printf("发现Meta刷新重定向: %s", metaLocation)
-
-						// 对Meta重定向URL进行编码处理
-						metaLocation = encodeRedirectURL(metaLocation)
-						log.Printf("编码后的Meta重定向URL: %s", metaLocation)
-
-						nextURL, err := url.Parse(metaLocation)
-						if err != nil {
-							log.Printf("解析Meta重定向URL失败: %v", err)
-							break
-						}
-
-						if !nextURL.IsAbs() {
-							currentURLParsed, err := url.Parse(currentURL)
-							if err != nil {
-								log.Printf("解析当前URL失败: %v", err)
-								break
+							if !nextURL.IsAbs() {
+								currentURLParsed, err := url.Parse(currentURL)
+								if err != nil {
+									log.Printf("[%s] 解析当前URL失败: %v", reqID, err)
+									break
+								}
+								nextURL = currentURLParsed.ResolveReference(nextURL)
 							}
-							nextURL = currentURLParsed.ResolveReference(nextURL)
+							// 去重防循环
+							if containsURL(redirectPath, nextURL.String()) {
+								log.Printf("[%s] 目标URL已在链路中，跳过重复: %s", reqID, nextURL.String())
+								continue
+							}
+							nextIP := getHostIP(nextURL.Hostname())
+							stepCount++
+							log.Printf("[%s] STEP %d [META]: %s (IP: %s) -> %s (IP: %s)", reqID, stepCount, currentURL, currentIP, nextURL.String(), nextIP)
+							redirectPath = append(redirectPath, nextURL.String())
+							continue
 						}
-
-						redirectPath = append(redirectPath, nextURL.String())
-						continue
-					}
+					} // HTML only
 				}
 
 				resp.Body.Close()
@@ -536,7 +615,18 @@ func init() {
 			selectedIndex = 0
 		}
 		selectedURL := redirectPath[selectedIndex]
-		log.Printf("根据 reverse_index=%d 选取 URL: %s (索引: %d/%d)", req.ReverseIndex, selectedURL, selectedIndex, len(redirectPath)-1)
+		// 链路总结
+		log.Printf("[%s] 重定向链路 (共 %d 步):", reqID, len(redirectPath)-1)
+		for idx, u := range redirectPath {
+			parsed, err := url.Parse(u)
+			ip := ""
+			if err == nil {
+				ip = getHostIP(parsed.Hostname())
+			}
+			log.Printf("[%s]   [%d] %s (IP: %s)", reqID, idx, u, ip)
+		}
+
+		log.Printf("[%s] 根据 reverse_index=%d 选取 URL: %s (索引: %d/%d)", reqID, req.ReverseIndex, selectedURL, selectedIndex, len(redirectPath)-1)
 
 		// 成功响应
 		response := RedirectCheckResponse{
@@ -553,8 +643,8 @@ func init() {
 		}
 
 		totalDuration := time.Since(startTime)
-		log.Printf("请求处理完成，总耗时: %v, 重定向总数: %d, 最终URL: %s",
-			totalDuration, len(redirectPath)-1, redirectPath[len(redirectPath)-1])
+		log.Printf("[%s] 请求处理完成，总耗时: %v, 重定向总数: %d, 最终URL: %s",
+			reqID, totalDuration, len(redirectPath)-1, selectedURL)
 
 		c.JSON(http.StatusOK, response)
 	})
