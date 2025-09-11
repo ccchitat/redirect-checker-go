@@ -525,6 +525,52 @@ func init() {
 					}
 				}
 
+				// 检查HTTP Refresh头重定向
+				if refreshHeader := resp.Header.Get("Refresh"); refreshHeader != "" {
+					log.Printf("[%s] 发现HTTP Refresh头: %s", reqID, refreshHeader)
+					
+					// 解析refresh头格式: "0;url=https://example.com" 或 "0; url=https://example.com"
+					refreshURL := parseRefreshHeader(refreshHeader)
+					if refreshURL != "" {
+						log.Printf("[%s] 解析到Refresh重定向URL: %s", reqID, refreshURL)
+						
+						// 对重定向URL进行编码处理
+						refreshURL = encodeRedirectURL(refreshURL)
+						log.Printf("[%s] 编码后的Refresh重定向URL: %s", reqID, refreshURL)
+						
+						nextURL, err := url.Parse(refreshURL)
+						if err != nil {
+							log.Printf("[%s] 解析Refresh重定向URL失败: %v", reqID, err)
+							resp.Body.Close()
+							break
+						}
+						
+						if !nextURL.IsAbs() {
+							currentURLParsed, err := url.Parse(currentURL)
+							if err != nil {
+								log.Printf("[%s] 解析当前URL失败: %v", reqID, err)
+								resp.Body.Close()
+								break
+							}
+							nextURL = currentURLParsed.ResolveReference(nextURL)
+						}
+						
+						// 去重防循环
+						if containsURL(redirectPath, nextURL.String()) {
+							log.Printf("[%s] 目标URL已在链路中，跳过重复: %s", reqID, nextURL.String())
+							resp.Body.Close()
+							break
+						}
+						
+						nextIP := getHostIP(nextURL.Hostname())
+						stepCount++
+						log.Printf("[%s] STEP %d [REFRESH]: %s (IP: %s) -> %s (IP: %s)", reqID, stepCount, currentURL, currentIP, nextURL.String(), nextIP)
+						redirectPath = append(redirectPath, nextURL.String())
+						resp.Body.Close()
+						continue
+					}
+				}
+
 				// 检查meta刷新重定向
 				if resp.StatusCode == 200 {
 					contentType := strings.ToLower(resp.Header.Get("Content-Type"))
@@ -924,6 +970,31 @@ func traceWithChromedp(initialURL string, timeout int, proxyConfig *ProxyConfig)
 	}
 
 	return redirects, nil
+}
+
+// 解析HTTP Refresh头
+func parseRefreshHeader(refreshHeader string) string {
+	// Refresh头格式通常为: "0;url=https://example.com" 或 "0; url=https://example.com"
+	// 也可能是: "5;url=https://example.com" (5秒后重定向)
+	
+	// 定义匹配模式
+	patterns := []string{
+		`^\d+\s*;\s*url\s*=\s*(.+)$`,  // "0;url=..." 或 "0; url = ..."
+		`^\d+\s*;\s*URL\s*=\s*(.+)$`,  // 大写URL的情况
+	}
+	
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(`(?i)` + pattern) // 使用case-insensitive匹配
+		matches := re.FindStringSubmatch(strings.TrimSpace(refreshHeader))
+		if len(matches) > 1 {
+			url := strings.TrimSpace(matches[1])
+			// 移除可能的引号
+			url = strings.Trim(url, `"'`)
+			return url
+		}
+	}
+	
+	return ""
 }
 
 // 检查URL是否已存在于重定向路径中
