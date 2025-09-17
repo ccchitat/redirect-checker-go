@@ -37,6 +37,27 @@ go get github.com/yourusername/redirect-checker-go
 go run main.go
 ```
 
+### 服务器白名单（启动前校验）
+
+为防止程序在未授权的服务器上运行，程序在启动时会读取当前目录的 `whitelist.txt` 并校验“服务器的公网 IPv4”是否在名单中。不在名单则直接退出。
+
+- 文件路径：`./whitelist.txt`
+- 文件格式：每行一个 IP 或 CIDR；目前匹配以“公网 IPv4”为主；空行与以 `#`、`//`、`;` 开头的行为注释，将被忽略。
+
+示例 `whitelist.txt`：
+
+```
+# 生产服务器
+10.0.12.34
+10.0.0.0/16
+
+# IPv6 样例
+fd00::/8
+2001:db8::1
+```
+
+注意：本校验仅匹配服务器“公网 IPv4”。若服务器位于 NAT/出口网关之后，请在 `whitelist.txt` 写入该服务器对外的“公网 IP”（或对应 CIDR）。
+
 ### API 调用示例
 
 ```bash

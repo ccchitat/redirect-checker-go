@@ -1,0 +1,19 @@
+# Server whitelist for redirect-checker-go
+#
+# Put one entry per line. Supported:
+#   - IPv4 or IPv6 address (exact match)
+#   - CIDR ranges (IPv4/IPv6), e.g. 10.0.0.0/16, fd00::/8
+# Lines starting with #, //, ; are comments and ignored.
+# Blank lines are ignored.
+#
+# IMPORTANT: This program now matches your server's PUBLIC IPv4.
+# Put the NAT egress/public IPv4 (or its CIDR) here.
+#
+# Examples:
+# 10.0.12.34
+# 10.0.0.0/16
+# fd00::/8
+# 2001:db8::1
+
+# Add your allowed IPs/CIDRs below:
+74.211.100.215
