@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	_ "embed"
 	"log"
 	"net"
 	"net/http"
@@ -96,13 +97,83 @@ func loadWhitelist(filePath string) ([]net.IP, []*net.IPNet, error) {
 	return ips, cidrs, nil
 }
 
+//go:embed whitelist.txt
+var embeddedWhitelist string
+
+func loadWhitelistFromString(content string) ([]net.IP, []*net.IPNet, error) {
+	var ips []net.IP
+	var cidrs []*net.IPNet
+	s := bufio.NewScanner(strings.NewReader(content))
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if ip := net.ParseIP(line); ip != nil {
+			ips = append(ips, ip)
+			continue
+		}
+		if _, n, err := net.ParseCIDR(line); err == nil {
+			cidrs = append(cidrs, n)
+			continue
+		}
+	}
+	if err := s.Err(); err != nil {
+		return nil, nil, err
+	}
+	return ips, cidrs, nil
+}
+
+func enforceServerWhitelistFromEmbedded() {
+	ips, cidrs, err := loadWhitelistFromString(embeddedWhitelist)
+	if err != nil {
+		log.Fatalf("读取内嵌白名单失败: %v", err)
+	}
+	if len(ips) == 0 && len(cidrs) == 0 {
+		log.Fatalf("内嵌白名单中未找到有效的 IP/CIDR 条目，拒绝运行")
+	}
+
+	pub := tryFetchPublicIPv4(2 * time.Second)
+	if pub == "" {
+		log.Fatalf("无法获取服务器公网IPv4，拒绝运行。请确保网络可用，或稍后重试。")
+	}
+	pubIP := net.ParseIP(pub)
+	if pubIP == nil || pubIP.To4() == nil {
+		log.Fatalf("解析公网IPv4失败(%q)，拒绝运行。", pub)
+	}
+
+	matched := false
+	for _, allow := range ips {
+		if pubIP.Equal(allow) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		for _, n := range cidrs {
+			if n.Contains(pubIP) {
+				matched = true
+				break
+			}
+		}
+	}
+
+	if matched {
+		log.Printf("服务器白名单检查通过（按公网IPv4，内嵌白名单）。公网IPv4=%s，白名单条目: %d (IP) / %d (CIDR)", pubIP.String(), len(ips), len(cidrs))
+		return
+	}
+
+	log.Printf("服务器白名单检查未通过：公网IPv4=%s 不在内嵌白名单", pubIP.String())
+	log.Fatalf("拒绝运行（未在公网IP白名单中）")
+}
+
 func main() {
 	// 启动时先打印本机 IP 信息（便于核对白名单与环境）
 	logLocalIPs()
 	logPublicIP()
 
-	// 在启动HTTP服务前执行服务器白名单校验（基于文本文件）
-	enforceServerWhitelistFromFile("whitelist.txt")
+	// 在启动HTTP服务前执行服务器白名单校验（使用内嵌的文本）
+	enforceServerWhitelistFromEmbedded()
 	// 设置路由处理函数
 	http.HandleFunc("/", api.Listen)
 
