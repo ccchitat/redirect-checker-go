@@ -150,20 +150,29 @@ func detectWindowLocation(body string) (string, string) {
 		`window\.location\s*=\s*['\"](.*?)['\"]`,
 		`location\.(replace|href)\s*\(\s*['\"](.*?)['\"]\s*\)`,
 		`location\s*=\s*['\"](.*?)['\"]`,
+		// 新增：处理变量赋值模式，如 var u = "url"; location.replace(u);
+		`var\s+\w+\s*=\s*['\"](https?://[^'\"]+)['\"]\s*;[\s\S]*?location\.(replace|href)\s*\(\s*\w+\s*\)`,
 	}
 
 	lower := strings.ToLower(body)
-	for _, pattern := range patterns {
+	for i, pattern := range patterns {
 		re := regexp.MustCompile(pattern)
 		idx := re.FindStringSubmatchIndex(lower)
 		if len(idx) == 0 {
 			continue
 		}
-		// 捕获组对应的 URL 在最后一个分组
+		// 根据不同的模式提取URL
 		var urlStr string
-		// 提取原始大小写 URL
-		if len(idx) >= 4 {
-			urlStr = body[idx[len(idx)-2]:idx[len(idx)-1]]
+		if i == 4 { // 新增的变量赋值模式
+			// URL在第1个捕获组中 (索引2-3)
+			if len(idx) >= 4 {
+				urlStr = body[idx[2]:idx[3]]
+			}
+		} else {
+			// 原有模式，URL在最后一个捕获组
+			if len(idx) >= 4 {
+				urlStr = body[idx[len(idx)-2]:idx[len(idx)-1]]
+			}
 		}
 		// 上下文窗口
 		start := idx[0] - 300
